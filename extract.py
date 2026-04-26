@@ -19,11 +19,20 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 # URL da API pública da DGEG
 DGEG_URL = "https://precoscombustiveis.dgeg.gov.pt/api/PrecoComb/GetListPostos"
 
+# Headers necessários para a API da DGEG não rejeitar o pedido
+HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "pt-PT,pt;q=0.9",
+    "Referer": "https://precoscombustiveis.dgeg.gov.pt/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+}
+
 PARAMS = {
-    "idsTiposComb": "3201,2101,2201",  # Gasóleo, Gasolina 95, Gasolina 98
+    "idsTiposComb": "3201,2101,2201",  # Gasóleo simples, Gasolina 95, Gasolina 98
     "idioma": "pt",
     "qtdPorPagina": 500,
-    "pagina": 1
+    "pagina": 1,
+    "f": "json"
 }
 
 
@@ -35,12 +44,26 @@ def fetch_dgeg_data() -> list[dict]:
 
     while True:
         PARAMS["pagina"] = page
-        response = requests.get(DGEG_URL, params=PARAMS, timeout=30)
-        response.raise_for_status()
-        data = response.json()
+        response = requests.get(DGEG_URL, params=PARAMS, headers=HEADERS, timeout=30)
 
+        print(f"  Status: {response.status_code}")
+        print(f"  Content-Type: {response.headers.get('Content-Type', 'desconhecido')}")
+
+        if response.status_code != 200:
+            print(f"  Erro HTTP {response.status_code}. A parar.")
+            break
+
+        content_type = response.headers.get("Content-Type", "")
+        if "json" not in content_type:
+            print(f"  A API não devolveu JSON. Resposta (primeiros 500 chars):")
+            print(response.text[:500])
+            raise ValueError("API da DGEG não devolveu JSON válido.")
+
+        data = response.json()
         items = data.get("resultado", [])
+
         if not items:
+            print(f"  Sem mais resultados na página {page}.")
             break
 
         all_records.extend(items)
@@ -60,11 +83,11 @@ def transform(records: list[dict]) -> pd.DataFrame:
     today = date.today().isoformat()
 
     for r in records:
-        preco_str = r.get("Preco", "").replace(",", ".").strip()
+        preco_str = str(r.get("Preco", "")).replace(",", ".").replace("€/litro", "").strip()
         try:
             preco = float(preco_str)
         except ValueError:
-            continue  # ignora registos sem preço válido
+            continue
 
         rows.append({
             "data": today,
@@ -84,14 +107,12 @@ def transform(records: list[dict]) -> pd.DataFrame:
 def load_to_supabase(df: pd.DataFrame):
     """Insere os dados no Supabase."""
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
     records = df.to_dict(orient="records")
 
-    # Insere em lotes de 100 para evitar timeouts
     batch_size = 100
     for i in range(0, len(records), batch_size):
         batch = records[i:i + batch_size]
-        client.table("precos_combustivel").insert(batch).execute()
+        client.table("precos_combustivel").upsert(batch).execute()
         print(f"  Inseridos {min(i + batch_size, len(records))}/{len(records)} registos")
 
     print("Carga concluída com sucesso.")
@@ -99,7 +120,13 @@ def load_to_supabase(df: pd.DataFrame):
 
 def main():
     records = fetch_dgeg_data()
+    if not records:
+        print("Sem dados para inserir. A terminar.")
+        return
     df = transform(records)
+    if df.empty:
+        print("DataFrame vazio após limpeza. A terminar.")
+        return
     load_to_supabase(df)
 
 

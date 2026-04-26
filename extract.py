@@ -1,13 +1,15 @@
 """
 extract.py
-Extrai preços de combustível da API da DGEG e insere no Supabase.
-Usa apenas requests e json — sem biblioteca supabase.
+Extrai preços de combustível de todos os postos de Portugal via API da DGEG.
+Grava no Supabase via REST API directa (sem biblioteca supabase).
 Corre diariamente via GitHub Actions.
 """
 
 import os
 import json
+import time
 import requests
+import pandas as pd
 from datetime import date
 from dotenv import load_dotenv
 
@@ -16,7 +18,6 @@ load_dotenv()
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
-# Headers para o Supabase REST API direto
 SUPABASE_HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -24,7 +25,6 @@ SUPABASE_HEADERS = {
     "Prefer": "resolution=merge-duplicates"
 }
 
-# Headers para a API da DGEG
 DGEG_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "pt-PT,pt;q=0.9",
@@ -38,110 +38,116 @@ URL_PRECO_POSTO  = "https://precoscombustiveis.dgeg.gov.pt/api/PrecoComb/GetDado
 TIPOS_COMBUSTIVEL = ["Gasolina simples 95", "Gasolina simples 98", "Gasóleo simples"]
 
 
-def fetch_all_posto_ids() -> list:
-    """Obtém a lista de todos os postos."""
+def fetch_todos_postos() -> list:
+    """Obtém todos os postos num único pedido."""
     print("A obter lista de postos...")
-    all_postos = []
-    page = 1
+    session = requests.Session()
+    session.headers.update(DGEG_HEADERS)
 
-    while True:
-        params = {"pagina": page, "qtdPorPagina": 500, "idioma": "pt", "f": "json"}
-        r = requests.get(URL_LISTA_POSTOS, params=params, headers=DGEG_HEADERS, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        items = data.get("resultado", [])
-        if not items:
-            break
-        all_postos.extend(items)
-        print(f"  Página {page}: {len(items)} postos")
-        if len(items) < 500:
-            break
-        page += 1
-
-    print(f"Total de postos: {len(all_postos)}")
-    return all_postos
+    r = session.get(
+        URL_LISTA_POSTOS,
+        params={"pagina": 1, "qtdPorPagina": 5000, "idioma": "pt", "f": "json"},
+        timeout=30
+    )
+    r.raise_for_status()
+    postos = r.json().get("resultado", [])
+    print(f"Total de postos: {len(postos)}")
+    return postos, session
 
 
-def fetch_preco_posto(posto_id: str) -> list:
-    """Obtém os preços de um posto específico."""
-    try:
-        r = requests.get(URL_PRECO_POSTO, params={"id": posto_id, "f": "json"},
-                         headers=DGEG_HEADERS, timeout=15)
-        if r.status_code != 200:
-            return []
-        data = r.json()
-        return data.get("resultado", {}).get("Combustiveis", [])
-    except Exception:
-        return []
-
-
-def fetch_all_precos(postos: list) -> list:
-    """Itera por todos os postos e recolhe preços."""
+def fetch_todos_precos(postos: list, session) -> list:
+    """Recolhe preços de todos os postos."""
     today = date.today().isoformat()
     rows = []
     total = len(postos)
 
     for i, posto in enumerate(postos):
-        posto_id = posto.get("Codigo") or posto.get("Id") or posto.get("id")
-        if not posto_id:
+        try:
+            r = session.get(
+                URL_PRECO_POSTO,
+                params={"id": posto["Id"], "f": "json"},
+                timeout=10
+            )
+            if r.status_code != 200:
+                continue
+
+            data = r.json().get("resultado", {})
+            morada = data.get("Morada") or {}
+            localidade = morada.get("Localidade", "Desconhecido").strip()
+            cod_postal = morada.get("CodPostal", "").strip()
+
+            for comb in data.get("Combustiveis", []):
+                if comb.get("TipoCombustivel") not in TIPOS_COMBUSTIVEL:
+                    continue
+                preco_str = comb["Preco"].replace(",", ".").replace(" €/litro", "").strip()
+                try:
+                    rows.append({
+                        "data": today,
+                        "nome_posto": posto["Nome"].strip(),
+                        "marca": data.get("Marca", "").strip(),
+                        "localidade": localidade,
+                        "cod_postal": cod_postal,
+                        "tipo_combustivel": comb["TipoCombustivel"],
+                        "preco": float(preco_str),
+                    })
+                except ValueError:
+                    continue
+
+        except Exception:
             continue
 
-        combustiveis = fetch_preco_posto(str(posto_id))
-
-        for comb in combustiveis:
-            tipo = comb.get("TipoCombustivel", "")
-            if tipo not in TIPOS_COMBUSTIVEL:
-                continue
-
-            preco_str = str(comb.get("Preco", "")).replace(",", ".").replace(" €/litro", "").strip()
-            try:
-                preco = float(preco_str)
-            except ValueError:
-                continue
-
-            rows.append({
-                "data": today,
-                "distrito": posto.get("DistritoDescritivo", "Desconhecido").strip(),
-                "municipio": posto.get("MunicipioDescritivo", "Desconhecido").strip(),
-                "nome_posto": posto.get("Nome", "").strip(),
-                "tipo_combustivel": tipo,
-                "preco": preco,
-                "marca": posto.get("MarcaDescritivo", "").strip(),
-            })
+        time.sleep(0.2)
 
         if (i + 1) % 100 == 0:
-            print(f"  Processados {i + 1}/{total} postos, {len(rows)} preços recolhidos")
+            print(f"  {i + 1}/{total} postos processados, {len(rows)} preços recolhidos")
 
     print(f"Total de preços recolhidos: {len(rows)}")
     return rows
 
 
+def remove_duplicados(rows: list) -> list:
+    """Remove duplicados antes de gravar."""
+    df = pd.DataFrame(rows)
+    df = df.drop_duplicates(subset=["data", "nome_posto", "tipo_combustivel"])
+    print(f"Após remoção de duplicados: {len(df)} registos")
+    return df.to_dict(orient="records")
+
+
 def load_to_supabase(rows: list):
-    """Insere os dados no Supabase via REST API direta."""
+    """Insere os dados no Supabase via REST API."""
     url = f"{SUPABASE_URL}/rest/v1/precos_combustivel"
     batch_size = 100
+    total = len(rows)
 
-    for i in range(0, len(rows), batch_size):
+    for i in range(0, total, batch_size):
         batch = rows[i:i + batch_size]
-        r = requests.post(url, headers=SUPABASE_HEADERS, data=json.dumps(batch), timeout=30)
+        r = requests.post(
+            url,
+            headers=SUPABASE_HEADERS,
+            data=json.dumps(batch),
+            timeout=30
+        )
         if r.status_code in (200, 201):
-            print(f"  Inseridos {min(i + batch_size, len(rows))}/{len(rows)} registos")
+            print(f"  Inseridos {min(i + batch_size, total)}/{total}")
         else:
-            print(f"  Erro ao inserir batch {i}: {r.status_code} — {r.text[:200]}")
+            print(f"  Erro {r.status_code}: {r.text[:200]}")
 
     print("Carga concluída.")
 
 
 def main():
-    postos = fetch_all_posto_ids()
+    postos, session = fetch_todos_postos()
     if not postos:
         print("Sem postos. A terminar.")
         return
-    rows = fetch_all_precos(postos)
+
+    rows = fetch_todos_precos(postos, session)
     if not rows:
         print("Sem preços. A terminar.")
         return
-    load_to_supabase(rows)
+
+    rows_clean = remove_duplicados(rows)
+    load_to_supabase(rows_clean)
 
 
 if __name__ == "__main__":

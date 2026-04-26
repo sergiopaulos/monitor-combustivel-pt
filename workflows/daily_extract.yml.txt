@@ -1,0 +1,28 @@
+name: Extração Diária DGEG
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # todos os dias às 8h UTC (9h Lisboa)
+  workflow_dispatch:        # permite correr manualmente no GitHub
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install requests pandas supabase python-dotenv
+
+      - name: Correr extração
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python extract.py

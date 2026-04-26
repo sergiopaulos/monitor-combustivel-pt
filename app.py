@@ -46,10 +46,15 @@ def load_data() -> pd.DataFrame:
 def answer_question(question: str, df: pd.DataFrame) -> str:
     client = Groq(api_key=GROQ_API_KEY)
 
-    stats = df.groupby(["localidade", "tipo_combustivel"])["preco"].agg(["mean", "min", "max"]).reset_index()
-    stats.columns = ["localidade", "tipo_combustivel", "preco_medio", "preco_min", "preco_max"]
-    stats = stats.round(3)
-    stats_str = stats.to_string(index=False)
+    # Resume apenas top 10 mais baratos e mais caros por combustível
+    resumo = []
+    for tipo in df["tipo_combustivel"].unique():
+        df_tipo = df[df["tipo_combustivel"] == tipo]
+        por_local = df_tipo.groupby("localidade")["preco"].mean().round(3)
+        resumo.append(f"{tipo}: media={por_local.mean():.3f} min={por_local.min():.3f}({por_local.idxmin()}) max={por_local.max():.3f}({por_local.idxmax()})")
+        resumo.append(f"  Top 10 baratos: {dict(por_local.nsmallest(10))}")
+        resumo.append(f"  Top 10 caros: {dict(por_local.nlargest(10))}")
+    stats_str = "\n".join(resumo)
 
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",

@@ -115,7 +115,7 @@ def remove_duplicados(rows: list) -> list:
 
 def load_to_supabase(rows: list):
     """Insere os dados no Supabase via REST API."""
-    url = f"{SUPABASE_URL}/rest/v1/precos_combustivel"
+    url = f"{SUPABASE_URL}/rest/v1/precos_combustivel?on_conflict=data,nome_posto,tipo_combustivel"
     batch_size = 100
     total = len(rows)
 

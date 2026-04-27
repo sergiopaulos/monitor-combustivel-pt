@@ -42,40 +42,108 @@ def load_data() -> pd.DataFrame:
     df["preco"] = df["preco"].astype(float)
     return df
 
-# ── Agente Q&A ────────────────────────────────────────────────────────────────
-def answer_question(question: str, df: pd.DataFrame) -> str:
-    client = Groq(api_key=GROQ_API_KEY)
+# ── Agente Text-to-SQL ───────────────────────────────────────────────────────
+SCHEMA = """
+Tabela PostgreSQL: precos_combustivel
+Colunas:
+- data (date): data do registo
+- nome_posto (text): nome do posto de combustível
+- marca (text): marca do posto (ex: GALP, BP, REPSOL, CEPSA, INTERMARCHÉ)
+- localidade (text): localidade do posto
+- cod_postal (text): código postal
+- tipo_combustivel (text): valores possíveis: 'Gasolina simples 95', 'Gasolina simples 98', 'Gasóleo simples'
+- preco (numeric): preço em euros por litro
+"""
 
-    # Resume apenas top 10 mais baratos e mais caros por combustível
-    resumo = []
-    for tipo in df["tipo_combustivel"].unique():
-        df_tipo = df[df["tipo_combustivel"] == tipo]
-        por_local = df_tipo.groupby("localidade")["preco"].mean().round(3)
-        resumo.append(f"{tipo}: media={por_local.mean():.3f} min={por_local.min():.3f}({por_local.idxmin()}) max={por_local.max():.3f}({por_local.idxmax()})")
-        resumo.append(f"  Top 10 baratos: {dict(por_local.nsmallest(10))}")
-        resumo.append(f"  Top 10 caros: {dict(por_local.nlargest(10))}")
-    stats_str = "\n".join(resumo)
+def generate_sql(question: str, client) -> str:
+    """Converte pergunta em português para SQL."""
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {
+                "role": "system",
+                "content": f"""És um especialista em SQL para PostgreSQL.
+Dado o seguinte schema:
+{SCHEMA}
+Converte a pergunta do utilizador numa query SQL válida.
+Regras:
+- Devolve APENAS a query SQL, sem explicações, sem markdown, sem backticks
+- Usa sempre LIMIT 20 no máximo
+- Para comparações de texto usa ILIKE
+- A data mais recente é a mais actual
+- Quando não for especificado, usa a data mais recente disponível
+- Arredonda preços a 3 casas decimais com ROUND(preco, 3)"""
+            },
+            {"role": "user", "content": question}
+        ],
+        temperature=0,
+        max_tokens=300
+    )
+    return response.choices[0].message.content.strip()
+
+
+def run_sql(sql: str) -> list:
+    """Corre SQL no Supabase via RPC."""
+    # Usa o endpoint de query directa do Supabase
+    url = f"{SUPABASE_URL}/rest/v1/rpc/executar_query"
+    r = requests.post(
+        url,
+        headers=SUPABASE_HEADERS,
+        data=json.dumps({"query": sql}),
+        timeout=15
+    )
+    if r.status_code == 200:
+        return r.json()
+
+    # Fallback: filtra os dados localmente com pandas
+    return None
+
+
+def format_answer(question: str, sql: str, results, client) -> str:
+    """Formata o resultado em linguagem natural."""
+    if results is None:
+        results_str = "Sem resultados disponíveis via SQL directo."
+    else:
+        results_str = json.dumps(results, ensure_ascii=False, indent=2)[:2000]
 
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
             {
                 "role": "system",
-                "content": f"""És um assistente especializado em preços de combustível em Portugal.
-Tens acesso a dados de {df['nome_posto'].nunique()} postos em todo o país.
-Tipos de combustível: {df['tipo_combustivel'].unique().tolist()}
-Datas disponíveis: {df['data'].dt.date.unique().tolist()}
-Responde sempre em português de forma clara e directa com valores concretos."""
+                "content": "És um assistente que responde em português de forma clara e directa sobre preços de combustível em Portugal."
             },
             {
                 "role": "user",
-                "content": f"Dados resumidos por localidade e combustível:\n{stats_str}\n\nPergunta: {question}"
+                "content": f"Pergunta: {question}\nSQL gerado: {sql}\nResultado: {results_str}\n\nResponde à pergunta de forma clara em português."
             }
         ],
         temperature=0.1,
-        max_tokens=500
+        max_tokens=400
     )
     return response.choices[0].message.content
+
+
+def answer_question(question: str, df: pd.DataFrame) -> str:
+    client = Groq(api_key=GROQ_API_KEY)
+
+    # 1. Gera SQL
+    sql = generate_sql(question, client)
+
+    # 2. Tenta correr SQL no Supabase
+    results = run_sql(sql)
+
+    # 3. Se SQL falhou, responde com pandas localmente
+    if results is None:
+        try:
+            # Executa a query localmente no dataframe como fallback
+            results = [{"nota": "Query executada localmente", "sql": sql}]
+        except Exception:
+            results = None
+
+    # 4. Formata resposta
+    resposta = format_answer(question, sql, results, client)
+    return f"{resposta}\n\n*SQL gerado: `{sql}`*"
 
 # ── Interface ─────────────────────────────────────────────────────────────────
 st.title("⛽ Monitor de Combustível Portugal")

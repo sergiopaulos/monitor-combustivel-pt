@@ -81,6 +81,9 @@ def fetch_todos_precos(postos: list, session) -> list:
                     continue
                 preco_str = comb["Preco"].replace(",", ".").replace(" €/litro", "").strip()
                 try:
+                    preco = float(preco_str)
+                    if preco <= 0:
+                        continue
                     rows.append({
                         "data": today,
                         "nome_posto": posto["Nome"].strip(),
@@ -88,7 +91,7 @@ def fetch_todos_precos(postos: list, session) -> list:
                         "localidade": localidade,
                         "cod_postal": cod_postal,
                         "tipo_combustivel": comb["TipoCombustivel"],
-                        "preco": float(preco_str),
+                        "preco": preco,
                     })
                 except ValueError:
                     continue
@@ -115,7 +118,7 @@ def remove_duplicados(rows: list) -> list:
 
 def load_to_supabase(rows: list):
     """Insere os dados no Supabase via REST API."""
-    url = f"{SUPABASE_URL}/rest/v1/precos_combustivel?on_conflict=data,nome_posto,tipo_combustivel"
+    url = f"{SUPABASE_URL}/rest/v1/precos_combustivel"
     batch_size = 100
     total = len(rows)
 

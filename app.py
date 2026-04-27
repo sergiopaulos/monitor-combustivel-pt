@@ -69,7 +69,6 @@ Colunas:
 """
 
 def generate_sql(question: str, client) -> str:
-    """Converte pergunta em português para SQL."""
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
@@ -96,8 +95,6 @@ Regras:
 
 
 def run_sql(sql: str) -> list:
-    """Corre SQL no Supabase via RPC."""
-    # Usa o endpoint de query directa do Supabase
     url = f"{SUPABASE_URL}/rest/v1/rpc/executar_query"
     r = requests.post(
         url,
@@ -107,13 +104,10 @@ def run_sql(sql: str) -> list:
     )
     if r.status_code == 200:
         return r.json()
-
-    # Fallback: filtra os dados localmente com pandas
     return None
 
 
 def format_answer(question: str, sql: str, results, client) -> str:
-    """Formata o resultado em linguagem natural."""
     if results is None:
         results_str = "Sem resultados disponíveis via SQL directo."
     else:
@@ -139,22 +133,10 @@ def format_answer(question: str, sql: str, results, client) -> str:
 
 def answer_question(question: str, df: pd.DataFrame) -> str:
     client = Groq(api_key=GROQ_API_KEY)
-
-    # 1. Gera SQL
     sql = generate_sql(question, client)
-
-    # 2. Tenta correr SQL no Supabase
     results = run_sql(sql)
-
-    # 3. Se SQL falhou, responde com pandas localmente
     if results is None:
-        try:
-            # Executa a query localmente no dataframe como fallback
-            results = [{"nota": "Query executada localmente", "sql": sql}]
-        except Exception:
-            results = None
-
-    # 4. Formata resposta
+        results = [{"nota": "Query executada localmente", "sql": sql}]
     resposta = format_answer(question, sql, results, client)
     return f"{resposta}\n\n*SQL gerado: `{sql}`*"
 
@@ -189,7 +171,7 @@ with col4:
 st.divider()
 
 # ── Filtros ───────────────────────────────────────────────────────────────────
-col_f1, col_f2 = st.columns(2)
+col_f1, col_f2, col_f3 = st.columns(3)
 
 with col_f1:
     tipos = sorted(df["tipo_combustivel"].unique())
@@ -199,51 +181,58 @@ with col_f2:
     datas = sorted(df["data"].dt.date.unique(), reverse=True)
     data_sel = st.selectbox("Data", datas)
 
+with col_f3:
+    localidades = ["Todas"] + sorted(df["localidade"].dropna().unique())
+    localidade_sel = st.selectbox("Localidade", localidades)
+
+# Aplica filtros
 df_filtrado = df[
     (df["tipo_combustivel"] == tipo_sel) &
     (df["data"].dt.date == data_sel)
 ]
+if localidade_sel != "Todas":
+    df_filtrado = df_filtrado[df_filtrado["localidade"] == localidade_sel]
+
+st.divider()
+
+# ── Agente Q&A ────────────────────────────────────────────────────────────────
+st.subheader("💬 Faz uma Pergunta sobre os Dados")
+st.caption("Ex: 'Qual a localidade mais barata para gasolina 95?' ou 'Qual a marca mais cara?'")
+
+pergunta = st.text_input("A tua pergunta:", placeholder="Qual o posto mais barato em Lisboa?")
+
+if pergunta:
+    with st.spinner("A pensar..."):
+        try:
+            resposta = answer_question(pergunta, df)
+            st.success(resposta)
+        except Exception as e:
+            st.error(f"Erro: {e}")
 
 st.divider()
 
 # ── Gráficos ──────────────────────────────────────────────────────────────────
-col_g1, col_g2 = st.columns(2)
-
-with col_g1:
-    st.subheader("Top 20 Postos Mais Baratos")
-    top_baratos = df_filtrado.nsmallest(20, "preco")[["nome_posto", "localidade", "marca", "preco"]]
-    fig1 = px.bar(
-        top_baratos,
-        x="preco",
-        y="nome_posto",
-        orientation="h",
-        color="preco",
-        color_continuous_scale="RdYlGn_r",
-        hover_data=["localidade", "marca"],
-        labels={"preco": "Preço (€/litro)", "nome_posto": "Posto"}
-    )
-    fig1.update_layout(showlegend=False, height=500, yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig1, use_container_width=True)
-
-with col_g2:
-    st.subheader("Preço Médio por Marca")
-    df_marca = df_filtrado.groupby("marca")["preco"].mean().reset_index()
-    df_marca = df_marca[df_marca["marca"] != ""].sort_values("preco")
-    fig2 = px.bar(
-        df_marca,
-        x="preco",
-        y="marca",
-        orientation="h",
-        color="preco",
-        color_continuous_scale="RdYlGn_r",
-        labels={"preco": "Preço Médio (€/litro)", "marca": "Marca"}
-    )
-    fig2.update_layout(showlegend=False, height=500)
-    st.plotly_chart(fig2, use_container_width=True)
+st.subheader("Top 5 Marcas Mais Baratas")
+df_marca = df_filtrado.groupby("marca")["preco"].mean().reset_index()
+df_marca = df_marca[df_marca["marca"] != ""].sort_values("preco").head(5)
+fig2 = px.bar(
+    df_marca,
+    x="preco",
+    y="marca",
+    orientation="h",
+    color="preco",
+    color_continuous_scale="RdYlGn_r",
+    labels={"preco": "Preço Médio (€/litro)", "marca": "Marca"}
+)
+fig2.update_layout(showlegend=False, height=300, yaxis={"categoryorder": "total ascending"})
+st.plotly_chart(fig2, use_container_width=True)
 
 # ── Evolução temporal ─────────────────────────────────────────────────────────
 st.subheader("Evolução do Preço Médio ao Longo do Tempo")
-df_tempo = df[df["tipo_combustivel"] == tipo_sel].groupby("data")["preco"].mean().reset_index()
+df_tempo_filter = df[df["tipo_combustivel"] == tipo_sel]
+if localidade_sel != "Todas":
+    df_tempo_filter = df_tempo_filter[df_tempo_filter["localidade"] == localidade_sel]
+df_tempo = df_tempo_filter.groupby("data")["preco"].mean().reset_index()
 fig3 = px.line(
     df_tempo,
     x="data",
@@ -261,19 +250,3 @@ with st.expander("📋 Ver todos os postos"):
         .reset_index(drop=True),
         use_container_width=True
     )
-
-st.divider()
-
-# ── Agente Q&A ────────────────────────────────────────────────────────────────
-st.subheader("💬 Faz uma Pergunta sobre os Dados")
-st.caption("Ex: 'Qual a localidade mais barata para gasolina 95?' ou 'Qual a marca mais cara?'")
-
-pergunta = st.text_input("A tua pergunta:", placeholder="Qual o posto mais barato em Lisboa?")
-
-if pergunta:
-    with st.spinner("A pensar..."):
-        try:
-            resposta = answer_question(pergunta, df)
-            st.success(resposta)
-        except Exception as e:
-            st.error(f"Erro: {e}")

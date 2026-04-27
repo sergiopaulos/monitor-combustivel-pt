@@ -33,11 +33,24 @@ st.set_page_config(
 )
 
 # ── Carregar dados do Supabase ────────────────────────────────────────────────
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600)
 def load_data() -> pd.DataFrame:
-    url = f"{SUPABASE_URL}/rest/v1/precos_combustivel?select=*&limit=100000"
-    r = requests.get(url, headers=SUPABASE_HEADERS, timeout=30)
-    df = pd.DataFrame(r.json())
+    all_rows = []
+    offset = 0
+    page_size = 1000
+
+    while True:
+        url = f"{SUPABASE_URL}/rest/v1/precos_combustivel?select=*&limit={page_size}&offset={offset}"
+        r = requests.get(url, headers=SUPABASE_HEADERS, timeout=30)
+        batch = r.json()
+        if not batch:
+            break
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
+    df = pd.DataFrame(all_rows)
     df["data"] = pd.to_datetime(df["data"])
     df["preco"] = df["preco"].astype(float)
     return df

@@ -139,11 +139,22 @@ def load_to_supabase(rows: list):
 
 
 def export_csv(rows: list):
-    """Exporta os dados para CSV no repositório."""
+    """Acumula os dados novos no CSV existente no repositório."""
     import pandas as pd
-    df = pd.DataFrame(rows)
-    df.to_csv("dados.csv", index=False, encoding="utf-8-sig")
-    print(f"CSV exportado com {len(df)} registos.")
+    import os
+
+    df_novo = pd.DataFrame(rows)
+
+    if os.path.exists("dados.csv"):
+        df_existente = pd.read_csv("dados.csv", encoding="utf-8-sig")
+        df_total = pd.concat([df_existente, df_novo], ignore_index=True)
+        df_total = df_total.drop_duplicates(subset=["data", "nome_posto", "tipo_combustivel"])
+        print(f"CSV actualizado: {len(df_existente)} registos existentes + {len(df_novo)} novos = {len(df_total)} total")
+    else:
+        df_total = df_novo
+        print(f"CSV criado com {len(df_total)} registos.")
+
+    df_total.to_csv("dados.csv", index=False, encoding="utf-8-sig")
 
 
 def main():

@@ -138,6 +138,14 @@ def load_to_supabase(rows: list):
     print("Carga concluída.")
 
 
+def export_csv(rows: list):
+    """Exporta os dados para CSV no repositório."""
+    import pandas as pd
+    df = pd.DataFrame(rows)
+    df.to_csv("dados.csv", index=False, encoding="utf-8-sig")
+    print(f"CSV exportado com {len(df)} registos.")
+
+
 def main():
     postos, session = fetch_todos_postos()
     if not postos:
@@ -151,6 +159,7 @@ def main():
 
     rows_clean = remove_duplicados(rows)
     load_to_supabase(rows_clean)
+    export_csv(rows_clean)
 
 
 if __name__ == "__main__":

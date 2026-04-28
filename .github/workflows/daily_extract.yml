@@ -2,8 +2,8 @@ name: Extração Diária DGEG
 
 on:
   schedule:
-    - cron: '0 8 * * *'   # todos os dias às 8h UTC (9h Lisboa)
-  workflow_dispatch:        # permite correr manualmente no GitHub
+    - cron: '30 7 * * *'   # todos os dias às 7h30 UTC (8h30 Lisboa)
+  workflow_dispatch:
 
 jobs:
   extract:
@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout do repositório
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Configurar Python
         uses: actions/setup-python@v5
@@ -26,3 +28,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python extract.py
+
+      - name: Commit CSV para GitHub
+        run: |
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git add dados.csv
+          git diff --staged --quiet || git commit -m "actualiza dados.csv - $(date +'%Y-%m-%d')"
+          git push

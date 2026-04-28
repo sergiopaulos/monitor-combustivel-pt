@@ -154,10 +154,10 @@ st.divider()
 # ── Power BI Embed ─────────────────────────────────────────────────────────────
 st.subheader("📊 Análise detalhada (Power BI)")
 
-POWERBI_EMBED_URL = "https://app.powerbi.com/reportEmbed?reportId=133a647c-d5e4-42ef-8886-d7c82a662f46&autoAuth=true&ctid=40c37bfa-0c85-455b-9c64-5f64376942c6"
+POWERBI_EMBED_URL = "https://app.powerbi.com/view?r=eyJrIjoiNmMzZjMxMDEtMWI0Ny00ZThlLTg4OWYtMDY2MjMwY2U0MDhjIiwidCI6IjQwYzM3YmZhLTBjODUtNDU1Yi05YzY0LTVmNjQzNzY5NDJjNiIsImMiOjl9&pageName=783fe65ec005b6ca85b3"
 
 components.iframe(
     src=POWERBI_EMBED_URL,
-    height=1800,
+    height=900,
     scrolling=True,
 )

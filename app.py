@@ -176,6 +176,6 @@ POWERBI_EMBED_URL = "https://app.powerbi.com/view?r=eyJrIjoiNmMzZjMxMDEtMWI0Ny00
 
 components.iframe(
     src=POWERBI_EMBED_URL,
-    height=900,
-    scrolling=True,
+    height=1100,
+    scrolling=False,
 )

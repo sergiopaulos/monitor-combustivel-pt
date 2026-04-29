@@ -138,6 +138,17 @@ def load_to_supabase(rows: list):
     print("Carga concluída.")
 
 
+def update_distrito_concelho():
+    """Actualiza distrito e concelho via função no Supabase."""
+    print("A actualizar distrito e concelho...")
+    url = f"{SUPABASE_URL}/rest/v1/rpc/actualizar_distrito_concelho"
+    r = requests.post(url, headers=SUPABASE_HEADERS, data=json.dumps({}), timeout=30)
+    if r.status_code == 200:
+        print("Distrito e concelho actualizados com sucesso.")
+    else:
+        print(f"Erro ao actualizar: {r.status_code} — {r.text[:200]}")
+
+
 def export_csv(rows: list):
     """Acumula os dados novos no CSV existente no repositório."""
     import pandas as pd
@@ -170,6 +181,7 @@ def main():
 
     rows_clean = remove_duplicados(rows)
     load_to_supabase(rows_clean)
+    update_distrito_concelho()
     export_csv(rows_clean)
 
 

@@ -7,7 +7,6 @@ from groq import Groq
 from dotenv import load_dotenv
 import streamlit.components.v1 as components
 
-# ── Load env vars ──────────────────────────────────────────────────────────────
 load_dotenv()
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -20,14 +19,12 @@ SUPABASE_HEADERS = {
     "Content-Type": "application/json",
 }
 
-# ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Monitor Combustível Portugal",
     page_icon="⛽",
     layout="wide",
 )
 
-# ── Load data (needed for LLM context) ─────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_data() -> pd.DataFrame:
     all_rows = []
@@ -41,32 +38,30 @@ def load_data() -> pd.DataFrame:
         )
         r = requests.get(url, headers=SUPABASE_HEADERS, timeout=15)
         r.raise_for_status()
-
         data = r.json()
         if not data:
             break
-
         all_rows.extend(data)
         offset += page_size
 
     df = pd.DataFrame(all_rows)
     if "data" in df.columns:
         df["data"] = pd.to_datetime(df["data"])
-
     return df
 
-# ── LLM: Text-to-SQL Agent ──────────────────────────────────────────────────────
+# ── Schema actualizado com distrito e concelho ─────────────────────────────────
 SCHEMA = """
 Tabela PostgreSQL: precos_combustivel
 Colunas:
-- data (date)
-- nome_posto (text)
-- marca (text)
-- localidade (text)
-- cod_postal (text)
-- tipo_combustivel (text):
-  'Gasolina simples 95', 'Gasolina simples 98', 'Gasóleo simples'
-- preco (numeric)
+- data (date): data do registo
+- nome_posto (text): nome do posto de combustível
+- marca (text): marca do posto (ex: GALP, BP, REPSOL, CEPSA, INTERMARCHÉ)
+- localidade (text): localidade do posto
+- cod_postal (text): código postal
+- tipo_combustivel (text): 'Gasolina simples 95', 'Gasolina simples 98', 'Gasóleo simples'
+- preco (numeric): preço em euros por litro
+- distrito (text): distrito de Portugal (ex: Lisboa, Porto, Setúbal, Faro)
+- concelho (text): concelho de Portugal (ex: Cascais, Sintra, Almada)
 """
 
 def generate_sql(question: str, client: Groq) -> str:
@@ -75,20 +70,17 @@ def generate_sql(question: str, client: Groq) -> str:
         messages=[
             {
                 "role": "system",
-                "content": f"""
-És um especialista em SQL para PostgreSQL.
+                "content": f"""És um especialista em SQL para PostgreSQL.
 
 Schema:
 {SCHEMA}
 
 Regras:
-- Devolve APENAS a query SQL
-- Sem explicações, sem markdown
+- Devolve APENAS a query SQL, sem explicações, sem markdown, sem backticks
 - Usa LIMIT 20 no máximo
-- Usa ILIKE para texto
-- Usa sempre dados da data mais recente, se não indicado
-- Arredonda preços a 3 casas decimais com ROUND(preco, 3)
-"""
+- Usa ILIKE para comparações de texto
+- Quando não for especificado, usa a data mais recente disponível
+- Arredonda preços a 3 casas decimais com ROUND(preco, 3)"""
             },
             {"role": "user", "content": question},
         ],
@@ -96,6 +88,7 @@ Regras:
         max_tokens=300,
     )
     return response.choices[0].message.content.strip()
+
 
 def run_sql(sql: str):
     url = f"{SUPABASE_URL}/rest/v1/rpc/executar_query"
@@ -109,16 +102,39 @@ def run_sql(sql: str):
         return r.json()
     return None
 
-def answer_question(question: str, df: pd.DataFrame) -> str:
+
+def format_answer(question: str, sql: str, results, client: Groq) -> str:
+    """Converte o resultado SQL em linguagem natural."""
+    if results is None:
+        results_str = "Sem resultados."
+    else:
+        results_str = json.dumps(results, ensure_ascii=False, indent=2)[:2000]
+
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {
+                "role": "system",
+                "content": "És um assistente que responde em português de forma clara e directa sobre preços de combustível em Portugal. Responde sempre em frases completas com os valores concretos dos resultados."
+            },
+            {
+                "role": "user",
+                "content": f"Pergunta: {question}\nResultado da query: {results_str}\n\nResponde à pergunta em português com os valores concretos."
+            }
+        ],
+        temperature=0.1,
+        max_tokens=400,
+    )
+    return response.choices[0].message.content
+
+
+def answer_question(question: str, df: pd.DataFrame) -> tuple:
     client = Groq(api_key=GROQ_API_KEY)
     sql = generate_sql(question, client)
     results = run_sql(sql)
+    resposta = format_answer(question, sql, results, client)
+    return resposta, sql
 
-    if results is None:
-        return f"❌ Erro ao executar SQL\n\nSQL gerado:\n{sql}"
-
-    pretty = json.dumps(results, ensure_ascii=False, indent=2)
-    return f"SQL gerado:\n{sql}\n\nResultados:\n{pretty}"
 
 # ── UI ─────────────────────────────────────────────────────────────────────────
 st.title("⛽ Monitor de Combustível Portugal")
@@ -133,19 +149,21 @@ if df.empty:
 
 st.divider()
 
-# ── Q&A ─────────────────────────────────────────────────────────────────────────
+# ── Q&A ────────────────────────────────────────────────────────────────────────
 st.subheader("💬 Pergunta aos dados")
 
 pergunta = st.text_input(
     "Escreve a tua pergunta:",
-    placeholder="Qual é a localidade mais barata para gasóleo?"
+    placeholder="Qual é o distrito mais barato para gasóleo?"
 )
 
 if pergunta:
     with st.spinner("A pensar..."):
         try:
-            resposta = answer_question(pergunta, df)
+            resposta, sql = answer_question(pergunta, df)
             st.success(resposta)
+            with st.expander("Ver SQL gerado"):
+                st.code(sql, language="sql")
         except Exception as e:
             st.error(f"Erro: {e}")
 
